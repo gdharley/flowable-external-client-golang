@@ -8,7 +8,7 @@ import (
 	"github.com/gdharley/flowable-external-client-golang/flowable"
 )
 
-// External worker callback - simply unmarshal body into JSON (or keep raw string) and return the structured result
+// External worker callback - This is the worker handler function
 func external_worker(status int, body string) (flowable.HandlerStatus, *flowable.HandlerResult) {
 
 	// Initialize the response object
@@ -27,12 +27,15 @@ func external_worker(status int, body string) (flowable.HandlerStatus, *flowable
 
 	if body != "" {
 		var data interface{}
-		if err := json.Unmarshal([]byte(body), &data); err == nil {
-			res.Variables = append(res.Variables, flowable.HandlerVariable{Name: "body", Type: "json", Value: data})
-		} else {
-			res.Variables = append(res.Variables, flowable.HandlerVariable{Name: "body", Type: "string", Value: body})
+		if err := json.Unmarshal([]byte(body), &data); err != nil {
+			// Unmarshal failed — mark handler as failed and set error code
+			res.ErrorCode = err.Error()
+			res.Status = flowable.HandlerFail
 		}
 	}
+
+	// Add a dummy variable for testing/visibility
+	res.Variables = append(res.Variables, flowable.HandlerVariable{Name: "dummy", Type: "string", Value: "a simple string"})
 
 	return res.Status, res
 }
@@ -41,8 +44,10 @@ func main() {
 	url := "http://localhost:8090/flowable-work"
 	interval := 5 * time.Second
 
-	// use externalized callback
-	callback := external_worker
+	// Configure package-level defaults for auth/headers
+	flowable.SetAuth("admin", "test")
+	// (optional) override headers if needed
+	// flowable.SetDefaultHeader("X-My-Header", "value")
 
 	// Start polling in a goroutine to avoid blocking, provide acquire params
 	acquireParams := flowable.AcquireRequest{
@@ -53,7 +58,7 @@ func main() {
 		WorkerId:        "orderWorker1",
 		ScopeType:       "cmmn",
 	}
-	go flowable.Subscribe(url, interval, callback, acquireParams)
+	go flowable.Subscribe(url, interval, external_worker, acquireParams)
 	// To perform a single GET using List_jobs:
 	// status, body, err := flowable.List_jobs(url)
 	// fmt.Println(status, body, err)

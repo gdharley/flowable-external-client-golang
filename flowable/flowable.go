@@ -1,11 +1,9 @@
 package flowable
 
 import (
-	"bytes"
 	"encoding/json"
-	"io"
+	"fmt"
 	"log"
-	"net/http"
 	"time"
 )
 
@@ -49,52 +47,6 @@ type AcquireRequest struct {
 	ScopeType       string `json:"scopeType"`
 }
 
-// restGet performs a GET request to the provided full URL and returns status, body bytes, and error.
-func restGet(fullURL string) (status int, body []byte, err error) {
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", fullURL, nil)
-	if err != nil {
-		return -1, nil, err
-	}
-	req.Header.Add("Accept", `application/json`)
-	req.Header.Add("Content-Type", `application/json`)
-	req.SetBasicAuth("admin", "test")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return -1, nil, err
-	}
-	defer resp.Body.Close()
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return resp.StatusCode, nil, err
-	}
-	return resp.StatusCode, bodyBytes, nil
-}
-
-// restPost performs a POST request to the provided full URL with the given JSON payload.
-func restPost(fullURL string, payload []byte) (status int, body []byte, err error) {
-	client := &http.Client{}
-	req, err := http.NewRequest("POST", fullURL, bytes.NewReader(payload))
-	if err != nil {
-		return -1, nil, err
-	}
-	req.Header.Add("Accept", `application/json`)
-	req.Header.Add("Content-Type", `application/json`)
-	req.SetBasicAuth("admin", "test")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return -1, nil, err
-	}
-	defer resp.Body.Close()
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return resp.StatusCode, nil, err
-	}
-	return resp.StatusCode, bodyBytes, nil
-}
-
 // Acquire_jobs performs a POST to the acquire jobs endpoint (/acquire/jobs) with a JSON body.
 func Acquire_jobs(url string, reqBody AcquireRequest) (jobs []interface{}, body string, status int, err error) {
 	full := url + job_api + "/acquire/jobs"
@@ -133,7 +85,7 @@ func Subscribe(url string, interval time.Duration, handler ResponseHandler, acqu
 		if err != nil {
 			// If acquire failed (including parse errors), treat as status 500 and pass the raw body if available
 			resStatus, resObj := handler(500, "")
-			log.Printf("handler returned on acquire error: %s, result=%v", resStatus, resObj)
+			handle_worker_response(url, acquireReq.WorkerId, "", resStatus, resObj)
 			time.Sleep(interval)
 			continue
 		}
@@ -148,21 +100,145 @@ func Subscribe(url string, interval time.Duration, handler ResponseHandler, acqu
 			if err != nil {
 				// If we can't serialize an individual job, treat as processing/parsing failure => status 500
 				resStatus, resObj := handler(500, "")
-				log.Printf("handler returned serializing job: %s, result=%v", resStatus, resObj)
+				handle_worker_response(url, acquireReq.WorkerId, "", resStatus, resObj)
 				continue
 			}
-			resStatus, resObj := handler(status, string(jobBytes))
-			// If the handler returned a structured result, log it (or handle it here)
-			if resObj != nil {
-				if jb, err := json.Marshal(resObj); err == nil {
-					log.Printf("handler returned for job: status=%s, result=%s", resStatus, string(jb))
-				} else {
-					log.Printf("handler returned for job: status=%s, could not marshal result: %v", resStatus, err)
+			// Try to extract a jobId if present in the job object
+			jobId := ""
+			var jobMap map[string]interface{}
+			if err := json.Unmarshal(jobBytes, &jobMap); err == nil {
+				if id, ok := jobMap["id"].(string); ok && id != "" {
+					jobId = id
+				} else if jid, ok := jobMap["jobId"].(string); ok && jid != "" {
+					jobId = jid
+				} else if idnum, ok := jobMap["id"].(float64); ok {
+					jobId = fmt.Sprintf("%.0f", idnum)
 				}
-			} else {
-				log.Printf("handler returned for job: status=%s, result=nil", resStatus)
 			}
+			resStatus, resObj := handler(status, string(jobBytes))
+			// Delegate result handling to helper
+			handle_worker_response(url, acquireReq.WorkerId, jobId, resStatus, resObj)
 		}
 		time.Sleep(interval)
 	}
+}
+
+// handle_worker_response centralizes logging/processing of handler responses.
+// It also calls the appropriate task action (complete/fail/bpmnError/cmmnTerminate) via REST.
+func handle_worker_response(baseURL string, workerId string, jobId string, resStatus HandlerStatus, resObj *HandlerResult) {
+	// Ensure resObj has workerId populated
+	if resObj != nil && resObj.WorkerId == "" {
+		resObj.WorkerId = workerId
+	}
+
+	// Ensure we have a non-nil result object to send (create a minimal one if needed)
+	if resObj == nil {
+		resObj = &HandlerResult{WorkerId: workerId}
+	}
+
+	switch resStatus {
+	case HandlerSuccess:
+		task_complete(baseURL, jobId, resObj)
+	case HandlerFail:
+		if resObj.ErrorCode == "" {
+			resObj.ErrorCode = "failed"
+		}
+		task_fail(baseURL, jobId, resObj)
+	case HandlerBPMNError:
+		if resObj.ErrorCode == "" {
+			resObj.ErrorCode = "bpmnError"
+		}
+		task_bpmnError(baseURL, jobId, resObj)
+	case HandlerCMMNTerminate:
+		if resObj.ErrorCode == "" {
+			resObj.ErrorCode = "cmmnTerminate"
+		}
+		task_cmmnTerminate(baseURL, jobId, resObj)
+	default:
+		log.Printf("Unhandled handler status: %s", resStatus)
+	}
+}
+
+// task_complete posts completion with workerId and result to the job-specific URL
+func task_complete(baseURL string, jobId string, res *HandlerResult) {
+	if jobId == "" {
+		log.Printf("task_complete: missing jobId, skipping")
+		return
+	}
+	path := baseURL + job_api + "/acquire/jobs/" + jobId + "/complete"
+	payload := map[string]interface{}{"workerId": res.WorkerId, "result": res}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("task_complete: marshal error: %v", err)
+		return
+	}
+	status, body, err := restPost(path, b)
+	if err != nil {
+		log.Printf("task_complete: post error: %v", err)
+		return
+	}
+	log.Printf("task_complete: status=%d, body=%s", status, string(body))
+}
+
+// task_fail posts failure with workerId and result to the job-specific URL
+func task_fail(baseURL string, jobId string, res *HandlerResult) {
+	if jobId == "" {
+		log.Printf("task_fail: missing jobId, skipping")
+		return
+	}
+	path := baseURL + job_api + "/acquire/jobs/" + jobId + "/fail"
+	payload := map[string]interface{}{"workerId": res.WorkerId, "result": res}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("task_fail: marshal error: %v", err)
+		return
+	}
+	status, body, err := restPost(path, b)
+	if err != nil {
+		log.Printf("task_fail: post error: %v", err)
+		return
+	}
+	log.Printf("task_fail: status=%d, body=%s", status, string(body))
+}
+
+// task_bpmnError posts a BPMN error with workerId and result to the job-specific URL
+func task_bpmnError(baseURL string, jobId string, res *HandlerResult) {
+	if jobId == "" {
+		log.Printf("task_bpmnError: missing jobId, skipping")
+		return
+	}
+	path := baseURL + job_api + "/acquire/jobs/" + jobId + "/bpmnError"
+	payload := map[string]interface{}{"workerId": res.WorkerId, "result": res}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("task_bpmnError: marshal error: %v", err)
+		return
+	}
+	status, body, err := restPost(path, b)
+	if err != nil {
+		log.Printf("task_bpmnError: post error: %v", err)
+		return
+	}
+	log.Printf("task_bpmnError: status=%d, body=%s", status, string(body))
+}
+
+// task_cmmnTerminate posts a CMMN terminate with workerId and result to the job-specific URL
+func task_cmmnTerminate(baseURL string, jobId string, res *HandlerResult) {
+	if jobId == "" {
+		log.Printf("task_cmmnTerminate: missing jobId, skipping")
+		return
+	}
+	path := baseURL + job_api + "/acquire/jobs/" + jobId + "/cmmnTerminate"
+	payload := map[string]interface{}{"workerId": res.WorkerId, "result": res}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("task_cmmnTerminate: marshal error: %v", err)
+		return
+	}
+	status, body, err := restPost(path, b)
+	if err != nil {
+		log.Printf("task_cmmnTerminate: post error: %v", err)
+		return
+	}
+	log.Printf("task_cmmnTerminate: status=%d, body=%s", status, string(body))
 }
