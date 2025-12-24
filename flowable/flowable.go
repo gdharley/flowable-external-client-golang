@@ -166,8 +166,7 @@ func task_complete(baseURL string, jobId string, res *HandlerResult) {
 		return
 	}
 	path := baseURL + job_api + "/acquire/jobs/" + jobId + "/complete"
-	payload := map[string]interface{}{"workerId": res.WorkerId, "result": res}
-	b, err := json.Marshal(payload)
+	b, err := json.Marshal(res)
 	if err != nil {
 		log.Printf("task_complete: marshal error: %v", err)
 		return
@@ -187,8 +186,7 @@ func task_fail(baseURL string, jobId string, res *HandlerResult) {
 		return
 	}
 	path := baseURL + job_api + "/acquire/jobs/" + jobId + "/fail"
-	payload := map[string]interface{}{"workerId": res.WorkerId, "result": res}
-	b, err := json.Marshal(payload)
+	b, err := json.Marshal(res)
 	if err != nil {
 		log.Printf("task_fail: marshal error: %v", err)
 		return
@@ -208,8 +206,7 @@ func task_bpmnError(baseURL string, jobId string, res *HandlerResult) {
 		return
 	}
 	path := baseURL + job_api + "/acquire/jobs/" + jobId + "/bpmnError"
-	payload := map[string]interface{}{"workerId": res.WorkerId, "result": res}
-	b, err := json.Marshal(payload)
+	b, err := json.Marshal(res)
 	if err != nil {
 		log.Printf("task_bpmnError: marshal error: %v", err)
 		return
@@ -229,8 +226,7 @@ func task_cmmnTerminate(baseURL string, jobId string, res *HandlerResult) {
 		return
 	}
 	path := baseURL + job_api + "/acquire/jobs/" + jobId + "/cmmnTerminate"
-	payload := map[string]interface{}{"workerId": res.WorkerId, "result": res}
-	b, err := json.Marshal(payload)
+	b, err := json.Marshal(res)
 	if err != nil {
 		log.Printf("task_cmmnTerminate: marshal error: %v", err)
 		return

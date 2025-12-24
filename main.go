@@ -31,18 +31,19 @@ func external_worker(status int, body string) (flowable.HandlerStatus, *flowable
 			// Unmarshal failed — mark handler as failed and set error code
 			res.ErrorCode = err.Error()
 			res.Status = flowable.HandlerFail
+		} else {
+			// Add a dummy variable for testing/visibility
+			res.Variables = append(res.Variables, flowable.HandlerVariable{Name: "dummy", Type: "string", Value: "a simple string"})
+			res.Status = flowable.HandlerSuccess
 		}
 	}
-
-	// Add a dummy variable for testing/visibility
-	res.Variables = append(res.Variables, flowable.HandlerVariable{Name: "dummy", Type: "string", Value: "a simple string"})
 
 	return res.Status, res
 }
 
 func main() {
-	url := "http://localhost:8090/flowable-work"
-	interval := 5 * time.Second
+	url := "http://localhost:8090"
+	interval := 10 * time.Second
 
 	// Configure package-level defaults for auth/headers
 	flowable.SetAuth("admin", "test")
@@ -51,17 +52,14 @@ func main() {
 
 	// Start polling in a goroutine to avoid blocking, provide acquire params
 	acquireParams := flowable.AcquireRequest{
-		Topic:           "order",
+		Topic:           "testing",
 		LockDuration:    "PT10M",
 		NumberOfTasks:   1,
-		NumberOfRetries: 10,
-		WorkerId:        "orderWorker1",
-		ScopeType:       "cmmn",
+		NumberOfRetries: 5,
+		WorkerId:        "worker1",
+		ScopeType:       "bpmn",
 	}
 	go flowable.Subscribe(url, interval, external_worker, acquireParams)
-	// To perform a single GET using List_jobs:
-	// status, body, err := flowable.List_jobs(url)
-	// fmt.Println(status, body, err)
 
 	// Keep the main function running indefinitely
 	select {}
