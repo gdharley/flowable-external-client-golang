@@ -12,6 +12,7 @@ import (
 var (
 	AuthUser       = ""
 	AuthPass       = ""
+	BearerToken    = ""
 	DefaultHeaders = map[string]string{
 		"Accept":       "application/json",
 		"Content-Type": "application/json",
@@ -22,6 +23,11 @@ var (
 func SetAuth(user, pass string) {
 	AuthUser = user
 	AuthPass = pass
+}
+
+// SetBearerToken allows callers to set a Bearer token for REST requests.
+func SetBearerToken(token string) {
+	BearerToken = token
 }
 
 // SetDefaultHeader sets or overrides a default header key/value for REST requests.
@@ -36,6 +42,10 @@ func prepareRequest(req *http.Request) {
 	}
 	if AuthUser != "" || AuthPass != "" {
 		req.SetBasicAuth(AuthUser, AuthPass)
+	}
+	// set bearer token if available (won't exist on *http.Request)
+	if BearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+BearerToken)
 	}
 }
 
